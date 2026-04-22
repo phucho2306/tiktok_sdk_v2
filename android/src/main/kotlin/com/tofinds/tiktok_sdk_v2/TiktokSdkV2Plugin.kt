@@ -1,8 +1,11 @@
 package com.tofinds.tiktok_sdk_v2
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import androidx.annotation.NonNull
+import androidx.browser.customtabs.CustomTabsIntent
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -60,6 +63,7 @@ class TiktokSdkV2Plugin: FlutterPlugin, MethodCallHandler, ActivityAware, Plugin
         val state = call.argument<String>("state")
         redirectUrl = call.argument<String>("redirectUri") ?: ""
         var browserAuthEnabled = call.argument<Boolean>("browserAuthEnabled")
+        val disableAutoAuth = call.argument<Boolean>("disableAutoAuth") ?: false
 
 
         codeVerifier = PKCEUtils.generateCodeVerifier()
@@ -77,11 +81,51 @@ class TiktokSdkV2Plugin: FlutterPlugin, MethodCallHandler, ActivityAware, Plugin
 //          AuthApi.AuthMethod.TikTokApp
 //        }
         var authType = AuthApi.AuthMethod.ChromeTab
-        authApi.authorize(request, authType)
+        val didAuthorize = if (disableAutoAuth) {
+          authorizeWithAutoAuthDisabled(request)
+        } else {
+          authApi.authorize(request, authType)
+        }
+        if (!didAuthorize) {
+          result.error(
+            "authorize_failed",
+            "Could not open TikTok authorization page.",
+            null,
+          )
+          return
+        }
         loginResult = result
       }
       else -> result.notImplemented()
     }
+  }
+
+  private fun authorizeWithAutoAuthDisabled(request: AuthRequest): Boolean {
+    val activity = activity ?: return false
+    if (!request.validate()) return false
+
+    return try {
+      val uri = buildSdkAuthUriFromTikTokSdk(activity, request)
+        .appendQueryParameter("disable_auto_auth", "1")
+        .build()
+      CustomTabsIntent.Builder().build().launchUrl(activity, uri)
+      true
+    } catch (error: Exception) {
+      false
+    }
+  }
+
+  private fun buildSdkAuthUriFromTikTokSdk(activity: Activity, request: AuthRequest): Uri.Builder {
+    val helperClass = Class.forName("com.tiktok.open.sdk.auth.webauth.WebAuthHelper")
+    val helperInstance = helperClass.getField("INSTANCE").get(null)
+    val composeLoadUrl = helperClass.getMethod(
+      "composeLoadUrl",
+      Context::class.java,
+      AuthRequest::class.java,
+      String::class.java,
+    )
+    val loadUrl = composeLoadUrl.invoke(helperInstance, activity, request, activity.packageName) as String
+    return Uri.parse(loadUrl).buildUpon()
   }
 
   override fun onDetachedFromEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {

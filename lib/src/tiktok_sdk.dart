@@ -31,6 +31,7 @@ class TikTokSDK {
     required Set<TikTokPermissionType> permissions,
     required String redirectUri,
     bool? browserAuthEnabled,
+    bool? disableAutoAuth,
     String? state,
   }) async {
     try {
@@ -42,6 +43,7 @@ class TikTokSDK {
           'scope': scope,
           'redirectUri': redirectUri,
           'browserAuthEnabled': browserAuthEnabled ?? false,
+          'disableAutoAuth': disableAutoAuth ?? false,
           'state': state,
         },
       );

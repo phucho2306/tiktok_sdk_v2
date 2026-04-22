@@ -2,6 +2,7 @@ import Flutter
 import UIKit
 import TikTokOpenAuthSDK
 import TikTokOpenSDKCore
+import AuthenticationServices
 
 public class TiktokSdkV2Plugin: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
@@ -44,12 +45,18 @@ public class TiktokSdkV2Plugin: NSObject, FlutterPlugin {
       result(FlutterError.failedArgumentField("browserAuthEnabled", type: Bool.self))
       return
     }
+    
+    let disableAutoAuth = args["disableAutoAuth"] as? Bool ?? false
 
     let scopes = scope.split(separator: ",")
 
     let scopesSet = Set<String>(scopes.map{ String($0) })
     let authRequest = TikTokAuthRequest(scopes: scopesSet, redirectURI: redirectURI)
     authRequest.isWebAuth = browserAuthEnabled
+    if disableAutoAuth {
+      authRequest.isWebAuth = true
+      authRequest.service = TikTokAutoAuthDisabledService()
+    }
     self.authRequest = authRequest
     authRequest.send { [weak self] response in
         guard let self = self, let authRequest = response as? TikTokAuthResponse else { return }
@@ -69,6 +76,68 @@ public class TiktokSdkV2Plugin: NSObject, FlutterPlugin {
           ))
         }
     }
+  }
+}
+
+final class TikTokAutoAuthDisabledService: NSObject, TikTokRequestResponseHandling, ASWebAuthenticationPresentationContextProviding {
+  private var completion: ((TikTokBaseResponse) -> Void)?
+  private var authSession: ASWebAuthenticationSession?
+  
+  func handleRequest(
+    _ request: TikTokBaseRequest,
+    completion: ((TikTokBaseResponse) -> Void)?
+  ) -> Bool {
+    self.completion = completion
+    
+    authSession = ASWebAuthenticationSession(url: buildOpenURL(from: request)!, callbackURLScheme: TikTokInfo.clientKey) {
+      [weak self] callbackURL, error in
+      self?.handleResponseURL(url: callbackURL ?? self!.errorURL(error as NSError?))
+      self?.authSession = nil
+    }
+    if #available(iOS 13.0, *) {
+      authSession?.presentationContextProvider = self
+    }
+    return authSession?.start() ?? false
+  }
+  
+  func buildOpenURL(from request: TikTokBaseRequest) -> URL? {
+    let authRequest = request as! TikTokAuthRequest
+    var urlComponents = URLComponents(string: TikTokInfo.webAuthIndexURL)!
+    urlComponents.queryItems = authRequest.convertToWebQueryParams() + [
+      URLQueryItem(name: "disable_auto_auth", value: "1")
+    ]
+    return urlComponents.url
+  }
+  
+  @discardableResult
+  func handleResponseURL(url: URL) -> Bool {
+    guard let response = try? TikTokAuthResponse(fromURL: url, redirectURI: TikTokInfo.webAuthRedirectURI, fromWeb: true) else {
+      return false
+    }
+    completion?(response)
+    return true
+  }
+  
+  private func errorURL(_ error: NSError?) -> URL {
+    let isCancelled = error?.code == 1
+    var urlComponents = URLComponents(string: TikTokInfo.webAuthRedirectURI)!
+    urlComponents.queryItems = [
+      URLQueryItem(
+        name: "error_code",
+        value: "\(isCancelled ? TikTokAuthResponseErrorCode.cancelled.rawValue : TikTokAuthResponseErrorCode.common.rawValue)"
+      ),
+      URLQueryItem(name: "error", value: isCancelled ? "access_denied" : (error?.domain ?? "authorization_failed")),
+      URLQueryItem(
+        name: "error_description",
+        value: isCancelled ? "User cancelled authorization" : (error?.localizedDescription ?? "TikTok authorization failed")
+      )
+    ]
+    return urlComponents.url!
+  }
+  
+  @available(iOS 13.0, *)
+  func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+    UIApplication.shared.windows.first { $0.isKeyWindow } ?? ASPresentationAnchor()
   }
 }
 
